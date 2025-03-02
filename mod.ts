@@ -1,53 +1,40 @@
 import { serve } from "https://deno.land/std@0.171.0/http/server.ts";
 
-interface TokenData {
-  access_token: string;
-  refresh_token: string;
-}
-
-interface MenbakuData {
-  [userId: string]: TokenData;
-}
-
-// OAuth2認証後のアクセストークンとリフレッシュトークンをユーザーIDに紐づけて保持するデータ
-let menbakuData: MenbakuData = {};
-
-// リクエストハンドラー
 async function handler(req: Request): Promise<Response> {
   const url = new URL(req.url);
-
-  // /update エンドポイント：クエリパラメータ user_id, access_token, refresh_token を受け取り更新する
-  if (url.pathname === "/update" && req.method === "GET") {
-    const userId = url.searchParams.get("user_id");
-    const accessToken = url.searchParams.get("access_token");
-    const refreshToken = url.searchParams.get("refresh_token");
-    if (!userId || !accessToken || !refreshToken) {
-      return new Response(
-        JSON.stringify({ error: "Missing user_id, access_token or refresh_token parameter" }),
-        { status: 400, headers: { "Content-Type": "application/json" } }
-      );
+  
+  // Handle the /update endpoint, which expects a query parameter "code"
+  if (url.pathname === "/update") {
+    const code = url.searchParams.get("code");
+    if (code) {
+      // Here, the code value is considered as the access token.
+      // Optionally, you could store the token for later use.
+      return new Response("認証に成功しました！", {
+        status: 200,
+        headers: { "Content-Type": "text/plain" }
+      });
+    } else {
+      return new Response("失敗しました。", {
+        status: 400,
+        headers: { "Content-Type": "text/plain" }
+      });
     }
-    menbakuData[userId] = {
-      access_token: accessToken,
-      refresh_token: refreshToken
-    };
-    return new Response(
-      JSON.stringify({ message: "Token updated", user_id: userId }),
-      { status: 200, headers: { "Content-Type": "application/json" } }
-    );
   }
-  // /menbaku.json エンドポイント：現在のトークンデータを返す
+  // Optionally, provide the menbaku.json endpoint if needed in your application.
   else if (url.pathname === "/menbaku.json") {
-    return new Response(JSON.stringify(menbakuData), {
+    // For this example, we're just returning an empty JSON object.
+    const dummyData = {};
+    return new Response(JSON.stringify(dummyData), {
       status: 200,
       headers: { "Content-Type": "application/json" }
     });
   }
-  // その他のリクエスト：簡単なインフォメーションページを表示
+  // Provide a default response for other endpoints.
   else {
-    const message = "Deno Deploy OAuth2 Redirect Page.\n" +
-      "認証完了後は /update?user_id=...&access_token=...&refresh_token=... を使用してトークンが更新されます。";
-    return new Response(message, { status: 200 });
+    return new Response(
+      "Deno Deploy OAuth2 Redirect Page.\nUse /update?code=... to update token.",
+      { status: 200, headers: { "Content-Type": "text/plain" } }
+    );
   }
 }
 
