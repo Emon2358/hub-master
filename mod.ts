@@ -1,14 +1,14 @@
 import { serve } from "https://deno.land/std@0.171.0/http/server.ts";
 
 interface TokenData {
-  access_token: string;
-  refresh_token: string;
-  expires_in: number;
-  scope: string;
   token_type: string;
+  access_token: string;
+  expires_in: number;
+  refresh_token: string;
+  scope: string;
 }
 
-// Global storage for the token data; consider a persistent storage solution for production.
+// Global storage for the token data; consider a persistent solution for production.
 let storedToken: TokenData | null = null;
 
 async function exchangeCodeForToken(code: string): Promise<TokenData | null> {
