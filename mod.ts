@@ -12,18 +12,18 @@ interface TokenData {
   obtained_at: number; // epoch seconds when the token was obtained
 }
 
-// Store the token persistently with key ["token"]
+// アクセストークンを永続化ストレージに保存（キー: ["token"]）
 async function storeToken(tokenData: TokenData) {
   await kv.set(["token"], tokenData);
 }
 
-// Retrieve the stored token from persistent storage
+// 永続化ストレージからアクセストークンを取得
 async function getStoredToken(): Promise<TokenData | null> {
   const result = await kv.get<TokenData>(["token"]);
   return result.value || null;
 }
 
-// Exchange an authorization code for an access token via Discord's token endpoint
+// OAuth2 認証コードをアクセストークンに交換する
 async function exchangeCodeForToken(code: string): Promise<TokenData | null> {
   const clientId = Deno.env.get("DISCORD_CLIENT_ID");
   const clientSecret = Deno.env.get("DISCORD_CLIENT_SECRET");
@@ -68,7 +68,7 @@ async function exchangeCodeForToken(code: string): Promise<TokenData | null> {
   }
 }
 
-// Refresh the access token using the refresh token
+// リフレッシュトークンを用いてアクセストークンを更新する
 async function refreshAccessToken(oldToken: TokenData): Promise<TokenData | null> {
   const clientId = Deno.env.get("DISCORD_CLIENT_ID");
   const clientSecret = Deno.env.get("DISCORD_CLIENT_SECRET");
@@ -113,7 +113,7 @@ async function refreshAccessToken(oldToken: TokenData): Promise<TokenData | null
   }
 }
 
-// Render a rich HTML page
+// HTML を生成する
 function renderHTML(title: string, content: string): string {
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -135,8 +135,9 @@ function renderHTML(title: string, content: string): string {
 
 async function handler(req: Request): Promise<Response> {
   const url = new URL(req.url);
+
   if (url.pathname === "/") {
-    // Rich dashboard UI:
+    // ダッシュボード画面
     const token = await getStoredToken();
     let tokenInfo = "<p>トークンは保存されていません。</p>";
     if (token) {
@@ -151,13 +152,13 @@ async function handler(req: Request): Promise<Response> {
       <hr>
       <p><a class="button is-link" href="/auth">OAuth2 認証を開始する</a></p>
       <p><a class="button is-info" href="/refresh">アクセストークンをリフレッシュする</a></p>
-      <p><a class="button is-primary" href="/menbaku.json">JSONでトークン情報を確認する</a></p>
+      <p><a class="button is-primary" href="/menbaku.json">JSONでトークン情報とロールIDを確認する</a></p>
     `;
     return new Response(renderHTML("Discord OAuth2 ダッシュボード", content), {
       headers: { "Content-Type": "text/html; charset=utf-8" },
     });
   } else if (url.pathname === "/auth") {
-    // Redirect to Discord OAuth2 authorization
+    // Discord OAuth2 認証画面へリダイレクト
     const clientId = Deno.env.get("DISCORD_CLIENT_ID");
     const redirectUri = Deno.env.get("REDIRECT_URI");
     if (!clientId || !redirectUri) {
@@ -167,17 +168,60 @@ async function handler(req: Request): Promise<Response> {
     params.append("client_id", clientId);
     params.append("redirect_uri", redirectUri);
     params.append("response_type", "code");
-    params.append("scope", "identify guilds.join"); // required scopes
+    params.append("scope", "identify guilds.join"); // 必要なスコープ
     const oauthUrl = `https://discord.com/api/oauth2/authorize?${params.toString()}`;
     return Response.redirect(oauthUrl, 302);
   } else if (url.pathname === "/update") {
-    // Endpoint to exchange code for tokens and store them
+    // /update エンドポイント: コード交換後、自動でロール付与を実施
     const code = url.searchParams.get("code");
     if (code) {
       const tokenData = await exchangeCodeForToken(code);
       if (tokenData && tokenData.access_token) {
         await storeToken(tokenData);
-        return new Response(renderHTML("認証完了", `<p>認証に成功しました！アクセストークンを取得しました。</p><p><a class="button is-primary" href="/">ホームに戻る</a></p>`), {
+
+        // ユーザー情報の取得
+        const userRes = await fetch("https://discord.com/api/v10/users/@me", {
+          headers: { "Authorization": `Bearer ${tokenData.access_token}` }
+        });
+        if (!userRes.ok) {
+          const errorText = await userRes.text();
+          console.error("ユーザー情報の取得に失敗しました:", errorText);
+        } else {
+          const userInfo = await userRes.json();
+          const userId = userInfo.id;
+          // 環境変数からロールID取得（ROLE_ID として設定）
+          const roleid = Deno.env.get("ROLE_ID");
+          if (!roleid) {
+            console.error("環境変数 ROLE_ID が設定されていません");
+          } else {
+            const guildId = Deno.env.get("DEFAULT_GUILD_ID");
+            const botToken = Deno.env.get("BOT_TOKEN");
+            if (!guildId || !botToken) {
+              console.error("DEFAULT_GUILD_ID または BOT_TOKEN の環境変数が不足しています");
+            } else {
+              // Discord の「メンバー追加」エンドポイントを呼び出し、同時にロールを付与
+              const addMemberUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`;
+              const payload = {
+                access_token: tokenData.access_token,
+                roles: [roleid]
+              };
+              const addRes = await fetch(addMemberUrl, {
+                method: "PUT",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Authorization": `Bot ${botToken}`
+                },
+                body: JSON.stringify(payload)
+              });
+              if (!addRes.ok) {
+                const errorText = await addRes.text();
+                console.error("メンバー追加/ロール付与に失敗しました:", errorText);
+              }
+            }
+          }
+        }
+
+        return new Response(renderHTML("認証完了", `<p>認証に成功しました！アクセストークンを取得し、ロールを付与しました。</p><p><a class="button is-primary" href="/">ホームに戻る</a></p>`), {
           headers: { "Content-Type": "text/html; charset=utf-8" },
         });
       } else {
@@ -189,7 +233,7 @@ async function handler(req: Request): Promise<Response> {
       return new Response("必要なパラメーターが不足しています。", { status: 400 });
     }
   } else if (url.pathname === "/refresh") {
-    // Refresh the token using the stored refresh token
+    // 保存されたリフレッシュトークンを使いアクセストークンを更新
     const stored = await getStoredToken();
     if (stored) {
       const refreshed = await refreshAccessToken(stored);
@@ -209,9 +253,10 @@ async function handler(req: Request): Promise<Response> {
       });
     }
   } else if (url.pathname === "/menbaku.json") {
-    // Return stored token as JSON
+    // /menbaku.json では、保存されたアクセストークンと環境変数から取得したロールIDを返す
     const token = await getStoredToken();
-    return new Response(JSON.stringify({ token }), {
+    const roleid = Deno.env.get("ROLE_ID") || null;
+    return new Response(JSON.stringify({ token, roleid }), {
       headers: { "Content-Type": "application/json; charset=utf-8" },
     });
   } else {
