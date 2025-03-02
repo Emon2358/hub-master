@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.171.0/http/server.ts";
 
-// Deno KV を利用してユーザートークンを永続化（必要に応じて使用）
+// Deno KV を利用して永続化ストレージを使用
 const kv = await Deno.openKv();
 
 interface TokenData {
@@ -12,11 +12,18 @@ interface TokenData {
   obtained_at: number; // トークン取得時の epoch 秒
 }
 
-// ユーザーごとにトークンを永続化する場合の例（key: ["token", userId]）
+// ユーザーごとにトークンを保存（キー: ["token", userId]）
 async function storeToken(userId: string, tokenData: TokenData) {
   await kv.set(["token", userId], tokenData);
 }
 
+// 指定されたユーザーのトークンを取得する関数
+async function getToken(userId: string): Promise<TokenData | null> {
+  const result = await kv.get<TokenData>(["token", userId]);
+  return result.value || null;
+}
+
+// OAuth2認可コードからアクセストークンに交換する関数
 async function exchangeCodeForToken(code: string): Promise<TokenData | null> {
   const clientId = Deno.env.get("DISCORD_CLIENT_ID");
   const clientSecret = Deno.env.get("DISCORD_CLIENT_SECRET");
@@ -58,64 +65,7 @@ async function exchangeCodeForToken(code: string): Promise<TokenData | null> {
   }
 }
 
-// ユーザーをサーバーに追加し、かつAUTH_ROLE_IDが設定されていればロールを付与する関数
-async function addMemberAndAssignRole(tokenData: TokenData): Promise<string> {
-  const BOT_TOKEN = Deno.env.get("BOT_TOKEN");
-  const guildId = Deno.env.get("DEFAULT_GUILD_ID");
-  const authRoleId = Deno.env.get("AUTH_ROLE_ID"); // ロール付与用（任意）
-  if (!BOT_TOKEN || !guildId) return "必要な環境変数が設定されていません。";
-  
-  // OAuth2トークンからユーザー情報を取得
-  const userRes = await fetch("https://discord.com/api/v10/users/@me", {
-    headers: { Authorization: `Bearer ${tokenData.access_token}` },
-  });
-  if (!userRes.ok) {
-    const errText = await userRes.text();
-    console.error("ユーザー情報の取得に失敗:", errText);
-    return "ユーザー情報の取得に失敗しました。";
-  }
-  const userInfo = await userRes.json();
-  const userId = userInfo.id;
-
-  // ディスコードAPIの Add Guild Member エンドポイントを呼び出して参加させる
-  const joinUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`;
-  const payload = { access_token: tokenData.access_token };
-  const joinRes = await fetch(joinUrl, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bot ${BOT_TOKEN}`,
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!joinRes.ok) {
-    const joinErr = await joinRes.text();
-    console.error("サーバーへの参加に失敗:", joinErr);
-    return "サーバーへの参加に失敗しました。";
-  }
-
-  // AUTH_ROLE_ID が設定されていればロールを付与する
-  if (authRoleId) {
-    const roleUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${authRoleId}`;
-    const roleRes = await fetch(roleUrl, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bot ${BOT_TOKEN}`,
-      },
-    });
-    if (!roleRes.ok) {
-      const roleErr = await roleRes.text();
-      console.error("ロール付与に失敗:", roleErr);
-      return "サーバーへの参加は成功しましたが、ロールの付与に失敗しました。";
-    }
-  }
-  // ユーザートークンを永続化（必要に応じて）
-  await storeToken(userId, tokenData);
-  return "認証に成功しました！サーバーに追加され、ロールが付与されました。";
-}
-
-// Bulma を用いた豪華なUIを生成
+// HTML を Bulma を利用して生成するヘルパー関数
 function renderHTML(title: string, content: string): string {
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -137,7 +87,8 @@ function renderHTML(title: string, content: string): string {
 
 async function handler(req: Request): Promise<Response> {
   const url = new URL(req.url);
-  // ルート: 認証ボードを表示（全員が閲覧可能）
+
+  // ルート: 認証ボードを全員が閲覧できる形で表示
   if (url.pathname === "/") {
     const authImage = Deno.env.get("AUTH_BOARD_IMAGE_URL");
     const imageHTML = authImage ? `<figure class="image"><img src="${authImage}" alt="認証画像"></figure>` : "";
@@ -149,8 +100,9 @@ async function handler(req: Request): Promise<Response> {
     return new Response(renderHTML("Discord 認証ボード", content), {
       headers: { "Content-Type": "text/html; charset=utf-8" },
     });
-  } else if (url.pathname === "/auth") {
-    // DiscordのOAuth2認証画面へリダイレクト
+  } 
+  // /auth: DiscordのOAuth2認証画面へリダイレクト
+  else if (url.pathname === "/auth") {
     const clientId = Deno.env.get("DISCORD_CLIENT_ID");
     const redirectUri = Deno.env.get("REDIRECT_URI");
     if (!clientId || !redirectUri) {
@@ -163,14 +115,65 @@ async function handler(req: Request): Promise<Response> {
     params.append("scope", "identify guilds.join");
     const oauthUrl = `https://discord.com/api/oauth2/authorize?${params.toString()}`;
     return Response.redirect(oauthUrl, 302);
-  } else if (url.pathname === "/update") {
-    // OAuth2認証完了後、コードを受け取りトークン交換とサーバー参加＋ロール付与を実施
+  } 
+  // /update: OAuth2認証完了後、認可コードからトークン交換を行い、ユーザーをサーバーに参加＋ロール付与する
+  else if (url.pathname === "/update") {
     const code = url.searchParams.get("code");
     if (code) {
       const tokenData = await exchangeCodeForToken(code);
       if (tokenData && tokenData.access_token) {
-        const resultMessage = await addMemberAndAssignRole(tokenData);
-        return new Response(renderHTML("認証結果", `<p>${resultMessage}</p><p><a class="button is-primary" href="/">ホームに戻る</a></p>`), {
+        // アクセストークンからユーザーIDを取得する
+        const userRes = await fetch("https://discord.com/api/v10/users/@me", {
+          headers: { Authorization: `Bearer ${tokenData.access_token}` },
+        });
+        if (!userRes.ok) {
+          const errText = await userRes.text();
+          return new Response(renderHTML("認証エラー", `<p>ユーザー情報の取得に失敗しました。エラー: ${errText}</p><p><a class="button is-warning" href="/">ホームに戻る</a></p>`), {
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+          });
+        }
+        const userInfo = await userRes.json();
+        const userId = userInfo.id;
+        // ユーザーを対象サーバーに参加させ、環境変数 AUTH_ROLE_ID が設定されていればロールを付与する
+        const BOT_TOKEN = Deno.env.get("BOT_TOKEN");
+        const guildId = Deno.env.get("DEFAULT_GUILD_ID");
+        const authRoleId = Deno.env.get("AUTH_ROLE_ID"); // 任意
+        const joinUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`;
+        const payload = { access_token: tokenData.access_token };
+        const joinRes = await fetch(joinUrl, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bot ${BOT_TOKEN}`,
+          },
+          body: JSON.stringify(payload),
+        });
+        if (!joinRes.ok) {
+          const joinErr = await joinRes.text();
+          return new Response(renderHTML("認証エラー", `<p>サーバーへの参加に失敗しました。エラー: ${joinErr}</p><p><a class="button is-warning" href="/">ホームに戻る</a></p>`), {
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+          });
+        }
+        // AUTH_ROLE_ID が設定されていればロール付与を実施
+        if (authRoleId) {
+          const roleUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${authRoleId}`;
+          const roleRes = await fetch(roleUrl, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bot ${BOT_TOKEN}`,
+            },
+          });
+          if (!roleRes.ok) {
+            const roleErr = await roleRes.text();
+            return new Response(renderHTML("認証結果", `<p>サーバーへの参加は成功しましたが、ロールの付与に失敗しました。エラー: ${roleErr}</p><p><a class="button is-warning" href="/">ホームに戻る</a></p>`), {
+              headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+          }
+        }
+        // ユーザーごとにトークンを永続化
+        await storeToken(userId, tokenData);
+        return new Response(renderHTML("認証結果", `<p>認証に成功しました！サーバーに追加され、ロールが付与されました。</p><p><a class="button is-primary" href="/">ホームに戻る</a></p>`), {
           headers: { "Content-Type": "text/html; charset=utf-8" },
         });
       } else {
@@ -181,17 +184,19 @@ async function handler(req: Request): Promise<Response> {
     } else {
       return new Response("必要なパラメーターが不足しています。", { status: 400 });
     }
-  } else if (url.pathname === "/refresh") {
-    // リフレッシュ機能（必要に応じて実装）
-    return new Response(renderHTML("アクセストークン リフレッシュ", `<p>この機能は個別のユーザー毎に実装する必要があります。</p><p><a class="button is-link" href="/">ホームに戻る</a></p>`), {
-      headers: { "Content-Type": "text/html; charset=utf-8" },
-    });
-  } else if (url.pathname === "/menbaku.json") {
-    // デバッグ用に空のJSONを返す
-    return new Response(JSON.stringify({}), {
+  } 
+  // /token: クエリパラメータ user_id に対応するトークン情報をJSONで返す
+  else if (url.pathname === "/token") {
+    const userId = url.searchParams.get("user_id");
+    if (!userId) {
+      return new Response("user_idパラメーターが必要です。", { status: 400 });
+    }
+    const token = await getToken(userId);
+    return new Response(JSON.stringify({ token }), {
       headers: { "Content-Type": "application/json; charset=utf-8" },
     });
-  } else {
+  } 
+  else {
     return new Response("Not Found", {
       status: 404,
       headers: { "Content-Type": "text/plain; charset=utf-8" },
