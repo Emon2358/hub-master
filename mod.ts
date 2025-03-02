@@ -1,208 +1,125 @@
-import { serve } from "https://deno.land/std@0.171.0/http/server.ts";
+import {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  REST,
+  Routes,
+} from "discord.js";
+import fetch from "node-fetch";
+import "dotenv/config";
 
-// Deno KV を利用して永続化ストレージを使用
-const kv = await Deno.openKv();
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const DEFAULT_GUILD_ID = process.env.DEFAULT_GUILD_ID;
+const DENO_URL = process.env.DENO_URL.replace(/\/$/, ""); // 末尾のスラッシュ削除
+const OAUTH_URL = process.env.OAUTH_URL; // OAuth2認証画面へのURL
 
-interface TokenData {
-  token_type: string;
-  access_token: string;
-  expires_in: number;
-  refresh_token: string;
-  scope: string;
-  obtained_at: number; // トークン取得時の epoch 秒
-}
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds],
+  partials: [Partials.Channel],
+});
 
-// ユーザーごとにトークンを保存（キー: ["token", userId]）
-async function storeToken(userId: string, tokenData: TokenData) {
-  await kv.set(["token", userId], tokenData);
-}
+// アプリケーションコマンド（スラッシュコマンド）の定義
+const commands = [
+  {
+    name: "menbaku",
+    description: "保存されたトークン情報を利用して自動参加を行います",
+  },
+  {
+    name: "verfly",
+    description: "Discord認証ボードを表示します",
+  },
+  {
+    name: "refresh",
+    description: "アクセストークンをリフレッシュします",
+  },
+];
 
-// 指定されたユーザーのトークンを取得する関数
-async function getToken(userId: string): Promise<TokenData | null> {
-  const result = await kv.get<TokenData>(["token", userId]);
-  return result.value || null;
-}
-
-// OAuth2認可コードからアクセストークンに交換する関数
-async function exchangeCodeForToken(code: string): Promise<TokenData | null> {
-  const clientId = Deno.env.get("DISCORD_CLIENT_ID");
-  const clientSecret = Deno.env.get("DISCORD_CLIENT_SECRET");
-  const redirectUri = Deno.env.get("REDIRECT_URI");
-  if (!clientId || !clientSecret || !redirectUri) {
-    console.error("必要な環境変数(DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, REDIRECT_URI)が不足しています");
-    return null;
-  }
-  const params = new URLSearchParams();
-  params.append("client_id", clientId);
-  params.append("client_secret", clientSecret);
-  params.append("grant_type", "authorization_code");
-  params.append("code", code);
-  params.append("redirect_uri", redirectUri);
-  const response = await fetch("https://discord.com/api/v10/oauth2/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: params.toString(),
-  });
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error("トークン交換に失敗しました:", errorText);
-    return null;
-  }
+client.once("ready", async () => {
+  console.log(`Logged in as ${client.user.tag}`);
+  const rest = new REST({ version: "10" }).setToken(BOT_TOKEN);
   try {
-    const tokenData: any = await response.json();
-    const token: TokenData = {
-      token_type: tokenData.token_type,
-      access_token: tokenData.access_token,
-      expires_in: tokenData.expires_in,
-      refresh_token: tokenData.refresh_token,
-      scope: tokenData.scope,
-      obtained_at: Date.now() / 1000,
-    };
-    return token;
-  } catch (e) {
-    console.error("JSONパース中にエラーが発生しました:", e);
-    return null;
+    console.log("アプリケーションコマンドを登録中...");
+    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+    console.log("アプリケーションコマンドの登録に成功しました。");
+  } catch (error) {
+    console.error("アプリケーションコマンド登録エラー:", error);
   }
-}
+});
 
-// HTML を Bulma を利用して生成するヘルパー関数
-function renderHTML(title: string, content: string): string {
-  return `<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8">
-  <title>${title}</title>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bulma/0.9.4/css/bulma.min.css">
-</head>
-<body>
-<section class="section">
-  <div class="container">
-    <h1 class="title">${title}</h1>
-    <div class="content">${content}</div>
-  </div>
-</section>
-</body>
-</html>`;
-}
-
-async function handler(req: Request): Promise<Response> {
-  const url = new URL(req.url);
-
-  // ルート: 認証ボードを全員が閲覧できる形で表示
-  if (url.pathname === "/") {
-    const authImage = Deno.env.get("AUTH_BOARD_IMAGE_URL");
-    const imageHTML = authImage ? `<figure class="image"><img src="${authImage}" alt="認証画像"></figure>` : "";
-    const content = `
-      ${imageHTML}
-      <p>以下のボタンを押してDiscord認証を開始してください。</p>
-      <p><a class="button is-link" href="/auth">認証を開始する</a></p>
-    `;
-    return new Response(renderHTML("Discord 認証ボード", content), {
-      headers: { "Content-Type": "text/html; charset=utf-8" },
-    });
-  } 
-  // /auth: DiscordのOAuth2認証画面へリダイレクト
-  else if (url.pathname === "/auth") {
-    const clientId = Deno.env.get("DISCORD_CLIENT_ID");
-    const redirectUri = Deno.env.get("REDIRECT_URI");
-    if (!clientId || !redirectUri) {
-      return new Response("必要な環境変数が不足しています。", { status: 500 });
-    }
-    const params = new URLSearchParams();
-    params.append("client_id", clientId);
-    params.append("redirect_uri", redirectUri);
-    params.append("response_type", "code");
-    params.append("scope", "identify guilds.join");
-    const oauthUrl = `https://discord.com/api/oauth2/authorize?${params.toString()}`;
-    return Response.redirect(oauthUrl, 302);
-  } 
-  // /update: OAuth2認証完了後、認可コードからトークン交換を行い、ユーザーをサーバーに参加＋ロール付与する
-  else if (url.pathname === "/update") {
-    const code = url.searchParams.get("code");
-    if (code) {
-      const tokenData = await exchangeCodeForToken(code);
-      if (tokenData && tokenData.access_token) {
-        // アクセストークンからユーザーIDを取得する
-        const userRes = await fetch("https://discord.com/api/v10/users/@me", {
-          headers: { Authorization: `Bearer ${tokenData.access_token}` },
-        });
-        if (!userRes.ok) {
-          const errText = await userRes.text();
-          return new Response(renderHTML("認証エラー", `<p>ユーザー情報の取得に失敗しました。エラー: ${errText}</p><p><a class="button is-warning" href="/">ホームに戻る</a></p>`), {
-            headers: { "Content-Type": "text/html; charset=utf-8" },
-          });
-        }
-        const userInfo = await userRes.json();
-        const userId = userInfo.id;
-        // ユーザーを対象サーバーに参加させ、環境変数 AUTH_ROLE_ID が設定されていればロールを付与する
-        const BOT_TOKEN = Deno.env.get("BOT_TOKEN");
-        const guildId = Deno.env.get("DEFAULT_GUILD_ID");
-        const authRoleId = Deno.env.get("AUTH_ROLE_ID"); // 任意
-        const joinUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`;
-        const payload = { access_token: tokenData.access_token };
-        const joinRes = await fetch(joinUrl, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bot ${BOT_TOKEN}`,
-          },
-          body: JSON.stringify(payload),
-        });
-        if (!joinRes.ok) {
-          const joinErr = await joinRes.text();
-          return new Response(renderHTML("認証エラー", `<p>サーバーへの参加に失敗しました。エラー: ${joinErr}</p><p><a class="button is-warning" href="/">ホームに戻る</a></p>`), {
-            headers: { "Content-Type": "text/html; charset=utf-8" },
-          });
-        }
-        // AUTH_ROLE_ID が設定されていればロール付与を実施
-        if (authRoleId) {
-          const roleUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${authRoleId}`;
-          const roleRes = await fetch(roleUrl, {
-            method: "PUT",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bot ${BOT_TOKEN}`,
-            },
-          });
-          if (!roleRes.ok) {
-            const roleErr = await roleRes.text();
-            return new Response(renderHTML("認証結果", `<p>サーバーへの参加は成功しましたが、ロールの付与に失敗しました。エラー: ${roleErr}</p><p><a class="button is-warning" href="/">ホームに戻る</a></p>`), {
-              headers: { "Content-Type": "text/html; charset=utf-8" },
-            });
-          }
-        }
-        // ユーザーごとにトークンを永続化
-        await storeToken(userId, tokenData);
-        return new Response(renderHTML("認証結果", `<p>認証に成功しました！サーバーに追加され、ロールが付与されました。</p><p><a class="button is-primary" href="/">ホームに戻る</a></p>`), {
-          headers: { "Content-Type": "text/html; charset=utf-8" },
-        });
-      } else {
-        return new Response(renderHTML("認証エラー", `<p>トークン交換に失敗しました。ログを確認してください。</p><p><a class="button is-warning" href="/">ホームに戻る</a></p>`), {
-          headers: { "Content-Type": "text/html; charset=utf-8" },
-        });
+// /menbaku コマンドでは、実行ユーザーのIDに対応するトークンを /token エンドポイントから取得し、
+// そのトークンを利用してDiscord API の Add Guild Member エンドポイントにアクセスします。
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName === "menbaku") {
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const userId = interaction.user.id;
+      // /token エンドポイントから実行ユーザーのトークン情報を取得
+      const res = await fetch(`${DENO_URL}/token?user_id=${userId}`);
+      const data = await res.json();
+      const tokenData = data.token;
+      if (!tokenData || !tokenData.access_token) {
+        await interaction.editReply("あなたのアクセストークンが見つかりません。まずは認証を行ってください。");
+        return;
       }
-    } else {
-      return new Response("必要なパラメーターが不足しています。", { status: 400 });
+      // トークンを利用してユーザー情報を取得
+      const userRes = await fetch("https://discord.com/api/v10/users/@me", {
+        headers: { Authorization: `Bearer ${tokenData.access_token}` },
+      });
+      if (!userRes.ok) {
+        const errText = await userRes.text();
+        await interaction.editReply(`アクセストークンからユーザー情報を取得できませんでした。\nエラー: ${errText}`);
+        return;
+      }
+      const userInfo = await userRes.json();
+      const guildId = interaction.guildId || DEFAULT_GUILD_ID;
+      const addMemberUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userInfo.id}`;
+      const payload = { access_token: tokenData.access_token };
+      const addRes = await fetch(addMemberUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bot ${BOT_TOKEN}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (addRes.ok) {
+        await interaction.editReply("自動参加に成功しました！");
+      } else {
+        const addErr = await addRes.text();
+        await interaction.editReply(`自動参加に失敗しました。\nエラー: ${addErr}`);
+      }
+    } catch (err) {
+      console.error(err);
+      await interaction.editReply("エラーが発生しました。管理者に連絡してください。");
     }
-  } 
-  // /token: クエリパラメータ user_id に対応するトークン情報をJSONで返す
-  else if (url.pathname === "/token") {
-    const userId = url.searchParams.get("user_id");
-    if (!userId) {
-      return new Response("user_idパラメーターが必要です。", { status: 400 });
+  } else if (interaction.commandName === "verfly") {
+    const embed = new EmbedBuilder()
+      .setTitle("Discord 認証ボード")
+      .setDescription("以下のボタンを押してDiscord認証を開始してください。\n認証後、自動的にサーバー参加とロール付与が行われます。")
+      .setColor(0x7289da);
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel("認証を開始する")
+        .setStyle(ButtonStyle.Link)
+        .setURL(OAUTH_URL)
+    );
+    await interaction.reply({ embeds: [embed], components: [row] });
+  } else if (interaction.commandName === "refresh") {
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const res = await fetch(`${DENO_URL}/refresh`);
+      await res.text();
+      await interaction.editReply("アクセストークンが更新されました！");
+    } catch (err) {
+      console.error(err);
+      await interaction.editReply("アクセストークン更新中にエラーが発生しました。");
     }
-    const token = await getToken(userId);
-    return new Response(JSON.stringify({ token }), {
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-    });
-  } 
-  else {
-    return new Response("Not Found", {
-      status: 404,
-      headers: { "Content-Type": "text/plain; charset=utf-8" },
-    });
   }
-}
+});
 
-console.log("Deno Deploy server running.");
-serve(handler);
+client.login(BOT_TOKEN);
