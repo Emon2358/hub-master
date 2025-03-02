@@ -8,25 +8,24 @@ interface TokenData {
   token_type: string;
 }
 
-// グローバル変数として、最新のアクセストークン情報を保存します。
-// 本番環境ではデータベース等の永続化ストレージを利用することを推奨します。
+// Global storage for the token data; consider a persistent storage solution for production.
 let storedToken: TokenData | null = null;
 
 async function exchangeCodeForToken(code: string): Promise<TokenData | null> {
-  const client_id = Deno.env.get("DISCORD_CLIENT_ID");
-  const client_secret = Deno.env.get("DISCORD_CLIENT_SECRET");
-  const redirect_uri = Deno.env.get("REDIRECT_URI");
-  if (!client_id || !client_secret || !redirect_uri) {
+  const clientId = Deno.env.get("DISCORD_CLIENT_ID");
+  const clientSecret = Deno.env.get("DISCORD_CLIENT_SECRET");
+  const redirectUri = Deno.env.get("REDIRECT_URI");
+  if (!clientId || !clientSecret || !redirectUri) {
     console.error("必要な環境変数(DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, REDIRECT_URI)が不足しています");
     return null;
   }
 
   const params = new URLSearchParams();
-  params.append("client_id", client_id);
-  params.append("client_secret", client_secret);
+  params.append("client_id", clientId);
+  params.append("client_secret", clientSecret);
   params.append("grant_type", "authorization_code");
   params.append("code", code);
-  params.append("redirect_uri", redirect_uri);
+  params.append("redirect_uri", redirectUri);
 
   const response = await fetch("https://discord.com/api/v10/oauth2/token", {
     method: "POST",
@@ -39,8 +38,13 @@ async function exchangeCodeForToken(code: string): Promise<TokenData | null> {
     console.error("トークン交換に失敗しました:", errorText);
     return null;
   }
-  const tokenData: TokenData = await response.json();
-  return tokenData;
+  try {
+    const tokenData: TokenData = await response.json();
+    return tokenData;
+  } catch (e) {
+    console.error("JSONパース中にエラーが発生しました:", e);
+    return null;
+  }
 }
 
 async function handler(req: Request): Promise<Response> {
@@ -59,7 +63,7 @@ async function handler(req: Request): Promise<Response> {
           headers: { "Content-Type": "text/plain; charset=utf-8" },
         });
       } else {
-        return new Response("トークン交換に失敗しました。", {
+        return new Response("トークン交換に失敗しました。詳細はサーバーログを確認してください。", {
           status: 400,
           headers: { "Content-Type": "text/plain; charset=utf-8" },
         });
@@ -78,7 +82,7 @@ async function handler(req: Request): Promise<Response> {
       headers: { "Content-Type": "application/json; charset=utf-8" },
     });
   }
-  // それ以外は404を返す
+  // 上記以外は404を返す
   else {
     return new Response("Not Found", {
       status: 404,
