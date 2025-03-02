@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.171.0/http/server.ts";
 
-// Open Deno KV for persistent storage (available on Deno Deploy)
+// Deno Deploy の永続化ストレージ（KV）をオープン
 const kv = await Deno.openKv();
 
 interface TokenData {
@@ -9,7 +9,7 @@ interface TokenData {
   expires_in: number;
   refresh_token: string;
   scope: string;
-  obtained_at: number; // epoch seconds when the token was obtained
+  obtained_at: number; // トークン取得時のエポック秒
 }
 
 // アクセストークンを永続化ストレージに保存（キー: ["token"]）
@@ -113,7 +113,7 @@ async function refreshAccessToken(oldToken: TokenData): Promise<TokenData | null
   }
 }
 
-// HTML を生成する
+// HTML を生成するヘルパー関数
 function renderHTML(title: string, content: string): string {
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -152,7 +152,7 @@ async function handler(req: Request): Promise<Response> {
       <hr>
       <p><a class="button is-link" href="/auth">OAuth2 認証を開始する</a></p>
       <p><a class="button is-info" href="/refresh">アクセストークンをリフレッシュする</a></p>
-      <p><a class="button is-primary" href="/menbaku.json">JSONでトークン情報とロールIDを確認する</a></p>
+      <p><a class="button is-primary" href="/menbaku.json">JSONでトークン情報を確認する</a></p>
     `;
     return new Response(renderHTML("Discord OAuth2 ダッシュボード", content), {
       headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -172,91 +172,67 @@ async function handler(req: Request): Promise<Response> {
     const oauthUrl = `https://discord.com/api/oauth2/authorize?${params.toString()}`;
     return Response.redirect(oauthUrl, 302);
   } else if (url.pathname === "/update") {
-    // /update エンドポイント: コード交換後、自動でロール付与を実施
+    // /update エンドポイント：認証コードを受け取りアクセストークンに交換、KV に保存するのみ
     const code = url.searchParams.get("code");
     if (code) {
       const tokenData = await exchangeCodeForToken(code);
       if (tokenData && tokenData.access_token) {
         await storeToken(tokenData);
-
-        // ユーザー情報の取得
-        const userRes = await fetch("https://discord.com/api/v10/users/@me", {
-          headers: { "Authorization": `Bearer ${tokenData.access_token}` }
-        });
-        if (!userRes.ok) {
-          const errorText = await userRes.text();
-          console.error("ユーザー情報の取得に失敗しました:", errorText);
-        } else {
-          const userInfo = await userRes.json();
-          const userId = userInfo.id;
-          // 環境変数からロールID取得（ROLE_ID として設定）
-          const roleid = Deno.env.get("ROLE_ID");
-          if (!roleid) {
-            console.error("環境変数 ROLE_ID が設定されていません");
-          } else {
-            const guildId = Deno.env.get("DEFAULT_GUILD_ID");
-            const botToken = Deno.env.get("BOT_TOKEN");
-            if (!guildId || !botToken) {
-              console.error("DEFAULT_GUILD_ID または BOT_TOKEN の環境変数が不足しています");
-            } else {
-              // Discord の「メンバー追加」エンドポイントを呼び出し、同時にロールを付与
-              const addMemberUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`;
-              const payload = {
-                access_token: tokenData.access_token,
-                roles: [roleid]
-              };
-              const addRes = await fetch(addMemberUrl, {
-                method: "PUT",
-                headers: {
-                  "Content-Type": "application/json",
-                  "Authorization": `Bot ${botToken}`
-                },
-                body: JSON.stringify(payload)
-              });
-              if (!addRes.ok) {
-                const errorText = await addRes.text();
-                console.error("メンバー追加/ロール付与に失敗しました:", errorText);
-              }
-            }
-          }
-        }
-
-        return new Response(renderHTML("認証完了", `<p>認証に成功しました！アクセストークンを取得し、ロールを付与しました。</p><p><a class="button is-primary" href="/">ホームに戻る</a></p>`), {
-          headers: { "Content-Type": "text/html; charset=utf-8" },
-        });
+        return new Response(
+          renderHTML(
+            "認証完了",
+            `<p>認証に成功しました！アクセストークンを取得しました。</p><p><a class="button is-primary" href="/">ホームに戻る</a></p>`
+          ),
+          { headers: { "Content-Type": "text/html; charset=utf-8" } }
+        );
       } else {
-        return new Response(renderHTML("認証エラー", `<p>トークン交換に失敗しました。ログを確認してください。</p><p><a class="button is-warning" href="/">ホームに戻る</a></p>`), {
-          headers: { "Content-Type": "text/html; charset=utf-8" },
-        });
+        return new Response(
+          renderHTML(
+            "認証エラー",
+            `<p>トークン交換に失敗しました。ログを確認してください。</p><p><a class="button is-warning" href="/">ホームに戻る</a></p>`
+          ),
+          { headers: { "Content-Type": "text/html; charset=utf-8" } }
+        );
       }
     } else {
       return new Response("必要なパラメーターが不足しています。", { status: 400 });
     }
   } else if (url.pathname === "/refresh") {
-    // 保存されたリフレッシュトークンを使いアクセストークンを更新
+    // 保存されたリフレッシュトークンを用いてアクセストークンを更新
     const stored = await getStoredToken();
     if (stored) {
       const refreshed = await refreshAccessToken(stored);
       if (refreshed && refreshed.access_token) {
         await storeToken(refreshed);
-        return new Response(renderHTML("リフレッシュ完了", `<p>アクセストークンが更新されました！</p><p><a class="button is-primary" href="/">ホームに戻る</a></p>`), {
-          headers: { "Content-Type": "text/html; charset=utf-8" },
-        });
+        return new Response(
+          renderHTML(
+            "リフレッシュ完了",
+            `<p>アクセストークンが更新されました！</p><p><a class="button is-primary" href="/">ホームに戻る</a></p>`
+          ),
+          { headers: { "Content-Type": "text/html; charset=utf-8" } }
+        );
       } else {
-        return new Response(renderHTML("リフレッシュエラー", `<p>アクセストークンのリフレッシュに失敗しました。ログを確認してください。</p><p><a class="button is-warning" href="/">ホームに戻る</a></p>`), {
-          headers: { "Content-Type": "text/html; charset=utf-8" },
-        });
+        return new Response(
+          renderHTML(
+            "リフレッシュエラー",
+            `<p>アクセストークンのリフレッシュに失敗しました。ログを確認してください。</p><p><a class="button is-warning" href="/">ホームに戻る</a></p>`
+          ),
+          { headers: { "Content-Type": "text/html; charset=utf-8" } }
+        );
       }
     } else {
-      return new Response(renderHTML("エラー", `<p>保存されたトークンが見つかりません。まずはOAuth2認証を行ってください。</p><p><a class="button is-link" href="/auth">認証を行う</a></p>`), {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      });
+      return new Response(
+        renderHTML(
+          "エラー",
+          `<p>保存されたトークンが見つかりません。まずはOAuth2認証を行ってください。</p><p><a class="button is-link" href="/auth">認証を行う</a></p>`
+        ),
+        { headers: { "Content-Type": "text/html; charset=utf-8" } }
+      );
     }
   } else if (url.pathname === "/menbaku.json") {
-    // /menbaku.json では、保存されたアクセストークンと環境変数から取得したロールIDを返す
+    // /menbaku.json では、保存されたアクセストークンのみを JSON として返す
     const token = await getStoredToken();
-    const roleid = Deno.env.get("ROLE_ID") || null;
-    return new Response(JSON.stringify({ token, roleid }), {
+    return new Response(JSON.stringify({ token }), {
       headers: { "Content-Type": "application/json; charset=utf-8" },
     });
   } else {
