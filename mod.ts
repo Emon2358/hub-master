@@ -233,10 +233,10 @@ async function handler(req: Request): Promise<Response> {
     params.append("redirect_uri", redirectUri);
     params.append("response_type", "code");
     params.append("scope", "identify guilds.join");
-    const oauthUrl = `https://discord.com/api/oauth2/authorize?${params.toString()}`;
+    const oauthUrl = `https://discord.com/api/v10/oauth2/authorize?${params.toString()}`;
     return Response.redirect(oauthUrl, 302);
   } else if (url.pathname === "/update") {
-    // /update エンドポイント：認証コードを受け取りアクセストークンに交換、KVに保存、かつ認証成功時のみ設定のロールを付与
+    // /update エンドポイント：認証コードを受け取りアクセストークンに交換、KVに保存、かつ認証成功時にロールを付与
     const code = url.searchParams.get("code");
     if (code) {
       const tokenData = await exchangeCodeForToken(code);
@@ -256,6 +256,7 @@ async function handler(req: Request): Promise<Response> {
         // KVストレージから設定情報を取得（DEFAULT_GUILD_ID を使用）
         const settingsRes = await kv.get(["settings", DEFAULT_GUILD_ID]);
         const settings = settingsRes.value;
+        // 設定情報に guildid と roleid があり、かつユーザーIDが取得できていればロールを付与
         if (settings && settings.guildid && settings.roleid && userId) {
           const guildId = settings.guildid;
           const roleId = settings.roleid;
