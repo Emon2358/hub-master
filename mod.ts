@@ -9,6 +9,10 @@ if (!BOT_TOKEN) {
   throw new Error("環境変数 BOT_TOKEN が定義されていません。");
 }
 
+// DEFAULT_GUILD_ID (設定保存時のキーとして利用)
+const DEFAULT_GUILD_ID = Deno.env.get("DEFAULT_GUILD_ID") || "default";
+
+// TokenData インターフェイス
 interface TokenData {
   token_type: string;
   access_token: string;
@@ -18,18 +22,18 @@ interface TokenData {
   obtained_at: number; // トークン取得時のエポック秒
 }
 
-// アクセストークンを永続化ストレージに保存（キー: ["token"]）
+// トークンをKVストレージに保存（キー: ["token"]）
 async function storeToken(tokenData: TokenData) {
   await kv.set(["token"], tokenData);
 }
 
-// 永続化ストレージからアクセストークンを取得
+// KVストレージからトークンを取得
 async function getStoredToken(): Promise<TokenData | null> {
   const result = await kv.get<TokenData>(["token"]);
   return result.value || null;
 }
 
-// OAuth2 認証コードをアクセストークンに交換する
+// OAuth2認証コードをアクセストークンに交換
 async function exchangeCodeForToken(code: string): Promise<TokenData | null> {
   const clientId = Deno.env.get("DISCORD_CLIENT_ID");
   const clientSecret = Deno.env.get("DISCORD_CLIENT_SECRET");
@@ -38,20 +42,17 @@ async function exchangeCodeForToken(code: string): Promise<TokenData | null> {
     console.error("必要な環境変数(DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, REDIRECT_URI)が不足しています");
     return null;
   }
-
   const params = new URLSearchParams();
   params.append("client_id", clientId);
   params.append("client_secret", clientSecret);
   params.append("grant_type", "authorization_code");
   params.append("code", code);
   params.append("redirect_uri", redirectUri);
-
   const response = await fetch("https://discord.com/api/v10/oauth2/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: params.toString(),
   });
-
   if (!response.ok) {
     const errorText = await response.text();
     console.error("トークン交換に失敗しました:", errorText);
@@ -74,7 +75,7 @@ async function exchangeCodeForToken(code: string): Promise<TokenData | null> {
   }
 }
 
-// リフレッシュトークンを用いてアクセストークンを更新する
+// リフレッシュトークンを用いてアクセストークンを更新
 async function refreshAccessToken(oldToken: TokenData): Promise<TokenData | null> {
   const clientId = Deno.env.get("DISCORD_CLIENT_ID");
   const clientSecret = Deno.env.get("DISCORD_CLIENT_SECRET");
@@ -83,20 +84,17 @@ async function refreshAccessToken(oldToken: TokenData): Promise<TokenData | null
     console.error("必要な環境変数が不足しています");
     return null;
   }
-
   const params = new URLSearchParams();
   params.append("client_id", clientId);
   params.append("client_secret", clientSecret);
   params.append("grant_type", "refresh_token");
   params.append("refresh_token", oldToken.refresh_token);
   params.append("redirect_uri", redirectUri);
-
   const response = await fetch("https://discord.com/api/v10/oauth2/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: params.toString(),
   });
-
   if (!response.ok) {
     const errorText = await response.text();
     console.error("アクセストークン更新に失敗しました:", errorText);
@@ -139,9 +137,8 @@ function renderHTML(title: string, content: string): string {
 </html>`;
 }
 
-// 認証成功時用の HTML レンダー関数（黒基調、クールな背景＆画像付き円、ホームボタン無し）
+// 認証成功時用 HTML（黒基調、クールな背景＆画像付き円、ホームボタン無し）
 function renderSuccessHTML(title: string, content: string): string {
-  // 指定された画像 URL
   const imageUrl = "https://i.discogs.com/PQ4VvODS7TrSm__vY8YhDKeM0ZgxYeT5gqMpOCqMMsM/rs:fit/g:sm/q:90/h:444/w:450/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9MLTM1NzYx/LTExMTM0MjMwNjEu/anBn.jpeg";
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -160,16 +157,14 @@ function renderSuccessHTML(title: string, content: string): string {
       justify-content: center;
       height: 100vh;
     }
-    .container {
-      text-align: center;
-    }
+    .container { text-align: center; }
     .circle {
       width: 150px;
       height: 150px;
       border-radius: 50%;
       background: #444;
       overflow: hidden;
-      margin: 0 auto 20px auto;
+      margin: 0 auto 20px;
       animation: pekeAnimation 2s infinite;
     }
     .circle img {
@@ -194,17 +189,14 @@ function renderSuccessHTML(title: string, content: string): string {
 </html>`;
 }
 
-// setting.json を読み込む（Deno Deploy でもバンドルファイルとして利用可能な前提）
-async function loadSettings(): Promise<any | null> {
-  try {
-    const data = await Deno.readTextFile("setting.json");
-    return JSON.parse(data);
-  } catch (err) {
-    console.error("設定の読み込みに失敗しました:", err);
-    return null;
-  }
-}
+/*
+  このコードでは、環境変数に設定された DENO_URL を介して、
+  リモート側（例：Deno Deploy 側）に用意した設定取得／保存用エンドポイントと通信しています。
+  リモート側のエンドポイント（GET /settings?guildId=... と POST /settings）は、
+  各自の実装に合わせて用意してください。
+*/
 
+// 以下は、KVストレージを用いて設定情報を永続的に保存するためのエンドポイント
 async function handler(req: Request): Promise<Response> {
   const url = new URL(req.url);
 
@@ -240,11 +232,11 @@ async function handler(req: Request): Promise<Response> {
     params.append("client_id", clientId);
     params.append("redirect_uri", redirectUri);
     params.append("response_type", "code");
-    params.append("scope", "identify guilds.join"); // 必要なスコープ
+    params.append("scope", "identify guilds.join");
     const oauthUrl = `https://discord.com/api/oauth2/authorize?${params.toString()}`;
     return Response.redirect(oauthUrl, 302);
   } else if (url.pathname === "/update") {
-    // /update エンドポイント：認証コードを受け取りアクセストークンに交換、KV に保存、かつ認証成功時のみ設定のロールを付与する
+    // /update エンドポイント：認証コードを受け取りアクセストークンに交換、KVに保存、かつ認証成功時のみ設定のロールを付与
     const code = url.searchParams.get("code");
     if (code) {
       const tokenData = await exchangeCodeForToken(code);
@@ -261,8 +253,9 @@ async function handler(req: Request): Promise<Response> {
         } else {
           console.error("ユーザー情報の取得に失敗しました");
         }
-        // setting.json の情報を読み込み、ロール付与を実施（ユーザー情報が取得できた場合のみ）
-        const settings = await loadSettings();
+        // KVストレージから設定情報を取得（DEFAULT_GUILD_ID を使用）
+        const settingsRes = await kv.get(["settings", DEFAULT_GUILD_ID]);
+        const settings = settingsRes.value;
         if (settings && settings.guildid && settings.roleid && userId) {
           const guildId = settings.guildid;
           const roleId = settings.roleid;
@@ -271,15 +264,14 @@ async function handler(req: Request): Promise<Response> {
             method: "PUT",
             headers: {
               "Authorization": `Bot ${BOT_TOKEN}`,
-              "Content-Type": "application/json"
+              "Content-Type": "application/json",
             },
-            body: JSON.stringify({})  // 空のボディを送信
+            body: JSON.stringify({}),
           });
           if (!roleRes.ok) {
             console.error("ロールの付与に失敗しました", await roleRes.text());
           }
         }
-        // 認証成功ページ（ホームに戻るボタンはなし）
         return new Response(
           renderSuccessHTML("認証完了", `<p>認証に成功し、ロールが付与されました。</p>`),
           { headers: { "Content-Type": "text/html; charset=utf-8" } }
@@ -329,12 +321,55 @@ async function handler(req: Request): Promise<Response> {
       );
     }
   } else if (url.pathname === "/menbaku.json") {
-    // /menbaku.json では、保存されたアクセストークンと setting.json の情報を JSON として返す
+    // /menbaku.json では、保存されたトークンとKV上の設定情報をJSONで返す
     const token = await getStoredToken();
-    const settings = await loadSettings();
+    const settingsRes = await kv.get(["settings", DEFAULT_GUILD_ID]);
+    const settings = settingsRes.value || {};
     return new Response(JSON.stringify({ token, settings }), {
       headers: { "Content-Type": "application/json; charset=utf-8" },
     });
+  } else if (url.pathname === "/settings") {
+    // GET /settings?guildId=... と POST /settings のエンドポイント
+    if (req.method === "GET") {
+      const guildId = url.searchParams.get("guildId");
+      if (!guildId) {
+        return new Response(JSON.stringify({ error: "guildId is required" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+        });
+      }
+      const result = await kv.get(["settings", guildId]);
+      return new Response(JSON.stringify({ settings: result.value || {} }), {
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+      });
+    } else if (req.method === "POST") {
+      try {
+        const body = await req.json();
+        const guildId = body.guildId;
+        if (!guildId) {
+          return new Response(JSON.stringify({ error: "guildId is required in JSON body" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+          });
+        }
+        const { guildId: _, ...settings } = body;
+        await kv.set(["settings", guildId], settings);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+        });
+      } catch (error) {
+        console.error("Error processing POST /settings", error);
+        return new Response(JSON.stringify({ error: "Failed to save settings" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+        });
+      }
+    } else {
+      return new Response(JSON.stringify({ error: "Method not allowed" }), {
+        status: 405,
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+      });
+    }
   } else {
     return new Response("Not Found", {
       status: 404,
@@ -345,4 +380,3 @@ async function handler(req: Request): Promise<Response> {
 
 console.log("Deno Deploy server running.");
 serve(handler);
-
