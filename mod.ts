@@ -236,7 +236,7 @@ async function handler(req: Request): Promise<Response> {
     const oauthUrl = `https://discord.com/api/v10/oauth2/authorize?${params.toString()}`;
     return Response.redirect(oauthUrl, 302);
   } else if (url.pathname === "/update") {
-    // /update エンドポイント：認証コードを受け取りアクセストークンに交換、KVに保存、かつ認証成功時にロールを付与
+    // /update エンドポイント：認証コードを受け取りアクセストークンに交換、KVに保存、かつ認証成功時にユーザーをサーバーに参加させ、KV上の設定情報に基づいてロールを付与
     const code = url.searchParams.get("code");
     if (code) {
       const tokenData = await exchangeCodeForToken(code);
@@ -256,10 +256,27 @@ async function handler(req: Request): Promise<Response> {
         // KVストレージから設定情報を取得（DEFAULT_GUILD_ID を使用）
         const settingsRes = await kv.get(["settings", DEFAULT_GUILD_ID]);
         const settings = settingsRes.value;
-        // 設定情報に guildid と roleid があり、かつユーザーIDが取得できていればロールを付与
+        // 設定情報に guildid と roleid があり、かつユーザーIDが取得できていれば処理を実施
         if (settings && settings.guildid && settings.roleid && userId) {
           const guildId = settings.guildid;
           const roleId = settings.roleid;
+          // まずユーザーをギルドに参加させる
+          const joinUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}`;
+          const joinPayload = { access_token: tokenData.access_token };
+          const joinRes = await fetch(joinUrl, {
+            method: "PUT",
+            headers: {
+              "Authorization": `Bot ${BOT_TOKEN}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(joinPayload),
+          });
+          if (!joinRes.ok && joinRes.status !== 204 && joinRes.status !== 201) {
+            console.error("ギルドへの参加に失敗しました", await joinRes.text());
+          } else {
+            console.log("ユーザーがギルドに参加しました");
+          }
+          // その後、ロールを付与する
           const addRoleUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
           const roleRes = await fetch(addRoleUrl, {
             method: "PUT",
@@ -271,6 +288,8 @@ async function handler(req: Request): Promise<Response> {
           });
           if (!roleRes.ok) {
             console.error("ロールの付与に失敗しました", await roleRes.text());
+          } else {
+            console.log("ロールが付与されました");
           }
         }
         return new Response(
