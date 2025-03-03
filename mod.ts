@@ -3,6 +3,12 @@ import { serve } from "https://deno.land/std@0.171.0/http/server.ts";
 // Deno Deploy の永続化ストレージ（KV）をオープン
 const kv = await Deno.openKv();
 
+// BOT_TOKEN を環境変数から取得
+const BOT_TOKEN = Deno.env.get("BOT_TOKEN");
+if (!BOT_TOKEN) {
+  throw new Error("環境変数 BOT_TOKEN が定義されていません。");
+}
+
 interface TokenData {
   token_type: string;
   access_token: string;
@@ -113,7 +119,7 @@ async function refreshAccessToken(oldToken: TokenData): Promise<TokenData | null
   }
 }
 
-// HTML を生成するヘルパー関数
+// 通常用 HTML レンダー関数（ダッシュボード等）
 function renderHTML(title: string, content: string): string {
   return `<!DOCTYPE html>
 <html lang="ja">
@@ -131,6 +137,67 @@ function renderHTML(title: string, content: string): string {
 </section>
 </body>
 </html>`;
+}
+
+// 認証成功時用の HTML レンダー関数（黒基調、クールな背景＆ペケアニメーション、ホームボタン無し）
+function renderSuccessHTML(title: string, content: string): string {
+  return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>${title}</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background: #000;
+      color: #fff;
+      font-family: "Arial", sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+    .container {
+      text-align: center;
+    }
+    .circle {
+      width: 150px;
+      height: 150px;
+      border-radius: 50%;
+      background: #444;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 3rem;
+      margin: 0 auto 20px auto;
+      animation: pekeAnimation 2s infinite;
+    }
+    @keyframes pekeAnimation {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.2); }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="circle">ペケ</div>
+    <h1>${title}</h1>
+    <div>${content}</div>
+  </div>
+</body>
+</html>`;
+}
+
+// setting.json を読み込む（Deno Deploy でもバンドルファイルとして利用可能な前提）
+async function loadSettings(): Promise<any | null> {
+  try {
+    const data = await Deno.readTextFile("setting.json");
+    return JSON.parse(data);
+  } catch (err) {
+    console.error("設定の読み込みに失敗しました:", err);
+    return null;
+  }
 }
 
 async function handler(req: Request): Promise<Response> {
@@ -152,7 +219,7 @@ async function handler(req: Request): Promise<Response> {
       <hr>
       <p><a class="button is-link" href="/auth">OAuth2 認証を開始する</a></p>
       <p><a class="button is-info" href="/refresh">アクセストークンをリフレッシュする</a></p>
-      <p><a class="button is-primary" href="/menbaku.json">JSONでトークン情報を確認する</a></p>
+      <p><a class="button is-primary" href="/menbaku.json">JSONでトークン＆設定情報を確認する</a></p>
     `;
     return new Response(renderHTML("Discord OAuth2 ダッシュボード", content), {
       headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -172,17 +239,42 @@ async function handler(req: Request): Promise<Response> {
     const oauthUrl = `https://discord.com/api/oauth2/authorize?${params.toString()}`;
     return Response.redirect(oauthUrl, 302);
   } else if (url.pathname === "/update") {
-    // /update エンドポイント：認証コードを受け取りアクセストークンに交換、KV に保存するのみ
+    // /update エンドポイント：認証コードを受け取りアクセストークンに交換、KV に保存、かつ認証成功時のみ設定のロールを付与する
     const code = url.searchParams.get("code");
     if (code) {
       const tokenData = await exchangeCodeForToken(code);
       if (tokenData && tokenData.access_token) {
         await storeToken(tokenData);
+        // ユーザー情報を取得
+        const userRes = await fetch("https://discord.com/api/v10/users/@me", {
+          headers: { Authorization: `Bearer ${tokenData.access_token}` },
+        });
+        let userId: string | null = null;
+        if (userRes.ok) {
+          const userJson = await userRes.json();
+          userId = userJson.id;
+        } else {
+          console.error("ユーザー情報の取得に失敗しました");
+        }
+        // setting.json の情報を読み込み、ロール付与を実施（ユーザー情報が取得できた場合のみ）
+        const settings = await loadSettings();
+        if (settings && settings.guildid && settings.roleid && userId) {
+          const guildId = settings.guildid;
+          const roleId = settings.roleid;
+          const addRoleUrl = `https://discord.com/api/v10/guilds/${guildId}/members/${userId}/roles/${roleId}`;
+          const roleRes = await fetch(addRoleUrl, {
+            method: "PUT",
+            headers: {
+              "Authorization": `Bot ${BOT_TOKEN}`
+            },
+          });
+          if (!roleRes.ok) {
+            console.error("ロールの付与に失敗しました", await roleRes.text());
+          }
+        }
+        // 認証成功ページ（ホームに戻るボタンはなし）
         return new Response(
-          renderHTML(
-            "認証完了",
-            `<p>認証に成功しました！アクセストークンを取得しました。</p><p><a class="button is-primary" href="/">ホームに戻る</a></p>`
-          ),
+          renderSuccessHTML("認証完了", `<p>認証に成功しました！ロールが付与されました。</p>`),
           { headers: { "Content-Type": "text/html; charset=utf-8" } }
         );
       } else {
@@ -230,9 +322,10 @@ async function handler(req: Request): Promise<Response> {
       );
     }
   } else if (url.pathname === "/menbaku.json") {
-    // /menbaku.json では、保存されたアクセストークンのみを JSON として返す
+    // /menbaku.json では、保存されたアクセストークンと setting.json の情報を JSON として返す
     const token = await getStoredToken();
-    return new Response(JSON.stringify({ token }), {
+    const settings = await loadSettings();
+    return new Response(JSON.stringify({ token, settings }), {
       headers: { "Content-Type": "application/json; charset=utf-8" },
     });
   } else {
