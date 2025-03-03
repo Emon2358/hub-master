@@ -139,8 +139,10 @@ function renderHTML(title: string, content: string): string {
 </html>`;
 }
 
-// 認証成功時用の HTML レンダー関数（黒基調、クールな背景＆ペケアニメーション、ホームボタン無し）
+// 認証成功時用の HTML レンダー関数（黒基調、クールな背景＆画像付き円、ホームボタン無し）
 function renderSuccessHTML(title: string, content: string): string {
+  // 指定された画像 URL
+  const imageUrl = "https://i.discogs.com/PQ4VvODS7TrSm__vY8YhDKeM0ZgxYeT5gqMpOCqMMsM/rs:fit/g:sm/q:90/h:444/w:450/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9MLTM1NzYx/LTExMTM0MjMwNjEu/anBn.jpeg";
   return `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -166,12 +168,15 @@ function renderSuccessHTML(title: string, content: string): string {
       height: 150px;
       border-radius: 50%;
       background: #444;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 3rem;
+      overflow: hidden;
       margin: 0 auto 20px auto;
       animation: pekeAnimation 2s infinite;
+    }
+    .circle img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
     }
     @keyframes pekeAnimation {
       0%, 100% { transform: scale(1); }
@@ -181,7 +186,7 @@ function renderSuccessHTML(title: string, content: string): string {
 </head>
 <body>
   <div class="container">
-    <div class="circle">ペケ</div>
+    <div class="circle"><img src="${imageUrl}" alt="Image"></div>
     <h1>${title}</h1>
     <div>${content}</div>
   </div>
@@ -265,8 +270,10 @@ async function handler(req: Request): Promise<Response> {
           const roleRes = await fetch(addRoleUrl, {
             method: "PUT",
             headers: {
-              "Authorization": `Bot ${BOT_TOKEN}`
+              "Authorization": `Bot ${BOT_TOKEN}`,
+              "Content-Type": "application/json"
             },
+            body: JSON.stringify({})  // 空のボディを送信
           });
           if (!roleRes.ok) {
             console.error("ロールの付与に失敗しました", await roleRes.text());
@@ -274,7 +281,7 @@ async function handler(req: Request): Promise<Response> {
         }
         // 認証成功ページ（ホームに戻るボタンはなし）
         return new Response(
-          renderSuccessHTML("認証完了", `<p>認証に成功しました！ロールが付与されました。</p>`),
+          renderSuccessHTML("認証完了", `<p>認証に成功し、ロールが付与されました。</p>`),
           { headers: { "Content-Type": "text/html; charset=utf-8" } }
         );
       } else {
@@ -338,3 +345,4 @@ async function handler(req: Request): Promise<Response> {
 
 console.log("Deno Deploy server running.");
 serve(handler);
+
